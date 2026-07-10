@@ -1,4 +1,5 @@
 ﻿import { buildReviewQuiz, generatePractice, generateTutorReply, gradeAnswer } from "./llmGateway.js";
+import { getAuthHeaders } from "./authClient.js";
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 
@@ -72,7 +73,7 @@ async function postJson(fetchImpl, baseUrl, path, payload, timeoutMs) {
   try {
     const response = await fetchImpl(`${baseUrl}${path}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...getAuthHeaders() },
       body: JSON.stringify(payload),
       signal: controller.signal
     });
@@ -110,7 +111,7 @@ async function streamJsonLines(fetchImpl, baseUrl, path, payload, handlers, time
   try {
     const response = await fetchImpl(`${baseUrl}${path}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...getAuthHeaders() },
       body: JSON.stringify(payload),
       signal: controller.signal
     });
@@ -185,6 +186,7 @@ function getConfiguredBaseUrl() {
 function normalizeBaseUrl(baseUrl) {
   return String(baseUrl || "").replace(/\/+$/, "");
 }
+
 
 
 

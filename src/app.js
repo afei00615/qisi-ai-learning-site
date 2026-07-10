@@ -1,9 +1,11 @@
 ﻿import { grades, knowledgeMap, subjects, terms } from "./data.js";
 import { createLearningApiClient } from "./apiClient.js";
+import { createAuthClient } from "./authClient.js";
 import { recordAuditLog } from "./auditLog.js";
 import { createStateRepository } from "./stateRepository.js";
 
 const learningApi = createLearningApiClient();
+const authClient = createAuthClient();
 const stateRepository = createStateRepository();
 
 let state = stateRepository.load();
@@ -16,8 +18,23 @@ let activeQuiz = null;
 let practiceLoading = false;
 let reviewLoadingMode = "";
 let systemNotice = "";
+let authReady = false;
+let loginError = "";
 
 const app = document.querySelector("#app");
+
+async function loadRemoteState() {
+  if (!stateRepository.remoteEnabled) return;
+  try {
+    const remoteState = await stateRepository.loadRemote();
+    if (!remoteState) return;
+    state = remoteState;
+    ensureChatSessionMaps();
+    render();
+  } catch (error) {
+    console.warn("State API load failed", error);
+  }
+}
 
 function saveState() {
   stateRepository.save(state);
@@ -59,17 +76,15 @@ function renderLogin() {
           <div class="brand-mark">启</div>
           <div>
             <h1>启思 AI</h1>
-            <p>选择演示账号进入对应工作台。</p>
+            <p>使用账号密码进入对应工作台。</p>
           </div>
         </div>
         <form class="profile-setup-form" id="login-form">
-          <label>
-            登录身份
-            <select id="login-user">
-              ${state.users.map((user) => `<option value="${user.id}">${roleLabel(user.role)} · ${escapeHtml(user.name)}</option>`).join("")}
-            </select>
-          </label>
+          <label>用户名<input id="login-username" name="username" autocomplete="username" required placeholder="student / parent / admin" /></label>
+          <label>密码<input id="login-password" name="password" type="password" autocomplete="current-password" required placeholder="请输入密码" /></label>
+          ${loginError ? `<div class="login-error">${escapeHtml(loginError)}</div>` : ""}
           <button type="submit">登录</button>
+          <p class="login-hint">体验账号：student / student123，parent / parent123，admin / admin123</p>
         </form>
       </section>
     </main>
@@ -601,15 +616,24 @@ function renderModerationQueue() {
 }
 
 function bindLoginEvents() {
-  document.querySelector("#login-form")?.addEventListener("submit", (event) => {
+  document.querySelector("#login-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const userId = document.querySelector("#login-user").value;
-    const user = state.users.find((item) => item.id === userId);
-    state.currentUserId = userId;
-    state.activeRole = user?.role || "student";
-    activeView = defaultViewForRole(state.activeRole);
-    saveState();
-    render();
+    const button = event.submitter;
+    if (button) button.disabled = true;
+    loginError = "";
+    try {
+      const result = await authClient.login(document.querySelector("#login-username").value, document.querySelector("#login-password").value);
+      state.currentUserId = result.user.id;
+      state.activeRole = result.user.role;
+      state.users = [result.user];
+      activeView = defaultViewForRole(result.user.role);
+      await loadRemoteState();
+    } catch (error) {
+      loginError = error.message;
+      render();
+    } finally {
+      if (button) button.disabled = false;
+    }
   });
 }
 
@@ -633,9 +657,10 @@ function bindProfileSetupEvents() {
 }
 
 function bindEvents() {
-  document.querySelector("#logout-button")?.addEventListener("click", () => {
+  document.querySelector("#logout-button")?.addEventListener("click", async () => {
+    await authClient.logout();
     state.currentUserId = "";
-    saveState();
+    state.users = [];
     render();
   });
 
@@ -893,61 +918,50 @@ function bindEvents() {
     }
   });
 
-  document.querySelector("#save-limit")?.addEventListener("click", () => {
-    state.student.dailyLimit = Number(document.querySelector("#limit-input").value);
-    saveState();
-    render();
-  });
-
-  document.querySelector("#bind-parent-form")?.addEventListener("submit", (event) => {
-    event.preventDefault();
-    const code = document.querySelector("#bind-code-input").value.trim().toUpperCase();
-    if (code !== String(state.student.bindingCode).toUpperCase()) {
-      systemNotice = "绑定码不正确，请让学生端重新查看绑定码。";
+  document.querySelector("#save-limit")?.addEventListener("click", async () => {
+    try {
+      const result = await authClient.saveParentSettings(Number(document.querySelector("#limit-input").value));
+      state.student.dailyLimit = result.dailyLimit;
+      systemNotice = "学习时长限制已保存。";
       render();
-      return;
+    } catch (error) {
+      showSystemError(error);
     }
-    state.parent.bindingStatus = "linked";
-    state.parent.linkedStudent = state.student.name;
-    state.parent.linkedStudentId = "student-demo";
-    recordAuditLog(state, { type: "家长绑定", detail: `${state.parent.name} 已绑定 ${state.student.name}。`, actor: "parent" });
-    saveState();
-    systemNotice = "";
-    render();
   });
 
-  document.querySelector("#report-content")?.addEventListener("click", () => {
-    const item = createModerationItem({
-      type: "家长举报",
-      source: "parent",
-      priority: "高",
-      detail: "家长提交了一条内容反馈，已进入管理端队列。"
-    });
-    state.moderationQueue.unshift(item);
-    recordAuditLog(state, {
-      type: "内容举报",
-      detail: item.detail,
-      actor: "parent"
-    });
-    saveState();
-    systemNotice = "已提交内容举报，管理员会在后台审核。";
-    render();
+  document.querySelector("#bind-parent-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      const result = await authClient.bindParent(document.querySelector("#bind-code-input").value.trim());
+      state.parent = { ...state.parent, ...result.parent };
+      systemNotice = "绑定成功。";
+      render();
+    } catch (error) {
+      showSystemError(error);
+    }
+  });
+
+  document.querySelector("#report-content")?.addEventListener("click", async () => {
+    try {
+      const result = await authClient.reportContent("家长提交了一条内容反馈，已进入管理端队列。");
+      state.moderationQueue.unshift(result.item);
+      systemNotice = "已提交内容举报，管理员会在后台审核。";
+      render();
+    } catch (error) {
+      showSystemError(error);
+    }
   });
 
   document.querySelectorAll("[data-review-action]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const item = state.moderationQueue.find((entry) => entry.id === button.dataset.reviewId);
-      if (!item) return;
-      item.status = button.dataset.reviewAction;
-      item.reviewedBy = currentUser().name;
-      item.reviewedAt = "刚刚";
-      recordAuditLog(state, {
-        type: "审核处理",
-        detail: `${statusLabel(item.status)}：${item.type}`,
-        actor: "admin"
-      });
-      saveState();
-      render();
+    button.addEventListener("click", async () => {
+      try {
+        const result = await authClient.reviewModeration(button.dataset.reviewId, button.dataset.reviewAction);
+        const index = state.moderationQueue.findIndex((entry) => entry.id === result.item.id);
+        if (index >= 0) state.moderationQueue[index] = result.item;
+        render();
+      } catch (error) {
+        showSystemError(error);
+      }
     });
   });
 
@@ -1153,26 +1167,22 @@ function friendlyErrorMessage(error) {
 }
 
 render();
+restoreSession();
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+async function restoreSession() {
+  const session = await authClient.restore();
+  authReady = true;
+  if (!session) {
+    state.currentUserId = "";
+    state.users = [];
+    render();
+    return;
+  }
+  state.currentUserId = session.user.id;
+  state.activeRole = session.user.role;
+  state.users = [session.user];
+  activeView = defaultViewForRole(session.user.role);
+  await loadRemoteState();
+}
 

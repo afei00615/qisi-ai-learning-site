@@ -1,9 +1,21 @@
 ﻿import { defaultState } from "./data.js";
+import { getAuthHeaders } from "./authClient.js";
 
 export const DEFAULT_STORAGE_KEY = "qisi-ai-learning-state";
 
-export function createStateRepository({ storage = getBrowserStorage(), storageKey = DEFAULT_STORAGE_KEY } = {}) {
+export function createStateRepository({
+  storage = getBrowserStorage(),
+  storageKey = DEFAULT_STORAGE_KEY,
+  apiBaseUrl = getConfiguredBaseUrl(),
+  fetchImpl = typeof fetch === "function" ? fetch.bind(globalThis) : null
+} = {}) {
+  const normalizedBaseUrl = normalizeBaseUrl(apiBaseUrl);
+  let pendingRemoteSave = null;
+  let remoteSaveTimer = 0;
+
   return {
+    remoteEnabled: Boolean(normalizedBaseUrl && fetchImpl),
+
     load() {
       if (!storage) return hydrateState(defaultState);
 
@@ -16,11 +28,40 @@ export function createStateRepository({ storage = getBrowserStorage(), storageKe
     },
 
     save(state) {
-      if (!storage) return false;
-      storage.setItem(storageKey, JSON.stringify(state));
+      const hydrated = hydrateState(state);
+      if (storage) storage.setItem(storageKey, JSON.stringify(hydrated));
+      scheduleRemoteSave(hydrated);
+      return Boolean(storage);
+    },
+
+    async loadRemote() {
+      if (!normalizedBaseUrl || !fetchImpl) return null;
+      const response = await fetchImpl(`${normalizedBaseUrl}/state`, { method: "GET", headers: getAuthHeaders(storage) });
+      if (!response.ok) throw new Error(`State API load failed: ${response.status} ${response.statusText}`);
+      const remoteState = hydrateState(await response.json());
+      if (storage) storage.setItem(storageKey, JSON.stringify(remoteState));
+      return remoteState;
+    },
+
+    async saveRemote(state) {
+      if (!normalizedBaseUrl || !fetchImpl) return false;
+      await postRemoteState(fetchImpl, normalizedBaseUrl, hydrateState(state));
       return true;
     }
   };
+
+  function scheduleRemoteSave(state) {
+    if (!normalizedBaseUrl || !fetchImpl) return;
+    pendingRemoteSave = state;
+    clearTimeout(remoteSaveTimer);
+    remoteSaveTimer = setTimeout(() => {
+      const snapshot = pendingRemoteSave;
+      pendingRemoteSave = null;
+      postRemoteState(fetchImpl, normalizedBaseUrl, snapshot).catch((error) => {
+        console.warn("State API save failed", error);
+      });
+    }, 250);
+  }
 }
 
 export function hydrateState(saved) {
@@ -63,6 +104,26 @@ function normalizeSessionMap(sessionMap, legacyChats, fallbackChats) {
 
 function getBrowserStorage() {
   return typeof globalThis.localStorage === "undefined" ? null : globalThis.localStorage;
+}
+
+async function postRemoteState(fetchImpl, baseUrl, state) {
+  const response = await fetchImpl(`${baseUrl}/state`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+    body: JSON.stringify(state)
+  });
+  if (!response.ok) throw new Error(`State API save failed: ${response.status} ${response.statusText}`);
+  return response.json();
+}
+
+function getConfiguredBaseUrl() {
+  const configuredBaseUrl = typeof globalThis.QISI_CONFIG?.apiBaseUrl === "string" ? globalThis.QISI_CONFIG.apiBaseUrl : "";
+  if (configuredBaseUrl && globalThis.location?.protocol === "file:" && configuredBaseUrl.startsWith("/")) return "";
+  return configuredBaseUrl;
+}
+
+function normalizeBaseUrl(baseUrl) {
+  return String(baseUrl || "").replace(/\/+$/, "");
 }
 
 function clone(value) {

@@ -1,10 +1,16 @@
 ﻿import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createLearningApiClient } from "./src/apiClient.js";
 import { recordAuditLog } from "./src/auditLog.js";
 import { buildReviewQuiz, generatePractice, generateTutorReply } from "./src/llmGateway.js";
 import { createStateRepository } from "./src/stateRepository.js";
 import { createDeepSeekClient } from "./server/deepseekClient.js";
 import { createLearningService } from "./server/learningService.js";
+import { createSqliteStateStore } from "./server/storage/sqliteStateStore.js";
+import { createSqliteAuthStore } from "./server/storage/sqliteAuthStore.js";
+import { createAuthService } from "./server/authService.js";
 
 const tutorReply = generateTutorReply({
   message: "这道方程怎么做？",
@@ -73,6 +79,24 @@ assert.ok(Array.isArray(repository.load().users));
 assert.ok(repository.load().users.some((user) => user.role === "admin"));
 assert.ok(Array.isArray(repository.load().moderationQueue));
 
+let remoteState = { ...loadedState, student: { ...loadedState.student, grade: 6 } };
+const remoteRepository = createStateRepository({
+  storage: null,
+  apiBaseUrl: "http://state.test/api",
+  fetchImpl: async (_url, options = {}) => {
+    if (options.method === "GET") {
+      return new Response(JSON.stringify(remoteState), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    remoteState = JSON.parse(options.body);
+    return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } });
+  }
+});
+const remoteLoadedState = await remoteRepository.loadRemote();
+assert.equal(remoteLoadedState.student.grade, 6);
+remoteLoadedState.student.grade = 5;
+await remoteRepository.saveRemote(remoteLoadedState);
+assert.equal(remoteState.student.grade, 5);
+
 const legacyRepository = createStateRepository({
   storage: {
     getItem: () => JSON.stringify({ chats: [{ role: "user", text: "旧数学题" }], knowledgeChats: [{ role: "user", text: "旧知识问答" }] }),
@@ -87,6 +111,25 @@ assert.equal(migratedState.knowledgeSessions.math[0].text, "旧知识问答");
 recordAuditLog(loadedState, { type: "测试事件", detail: "审计日志写入", actor: "system" });
 assert.equal(loadedState.safetyLogs[0].type, "测试事件");
 assert.ok(loadedState.safetyLogs[0].occurredAt);
+
+const tempStateDir = await mkdtemp(join(tmpdir(), "qisi-state-"));
+try {
+  const dbPath = join(tempStateDir, "state.sqlite");
+  const sqliteStore = createSqliteStateStore({ dbPath });
+  const sqliteState = sqliteStore.loadState();
+  sqliteState.student.grade = 9;
+  recordAuditLog(sqliteState, { type: "SQLite测试", detail: "状态已写入 SQLite", actor: "system" });
+  sqliteStore.saveState(sqliteState);
+  sqliteStore.close();
+
+  const reopenedStore = createSqliteStateStore({ dbPath });
+  const reopenedState = reopenedStore.loadState();
+  assert.equal(reopenedState.student.grade, 9);
+  assert.ok(reopenedState.safetyLogs.some((log) => log.type === "SQLite测试"));
+  reopenedStore.close();
+} finally {
+  await rm(tempStateDir, { recursive: true, force: true });
+}
 
 let deepSeekRequest;
 const deepSeekClient = createDeepSeekClient({
@@ -180,3 +223,25 @@ console.log("smoke tests passed");
 
 
 
+
+
+
+
+
+const tempAuthDir = await mkdtemp(join(tmpdir(), "qisi-auth-"));
+try {
+  const authStore = createSqliteAuthStore({ dbPath: join(tempAuthDir, "auth.sqlite") });
+  const authService = createAuthService({ authStore });
+  const login = authService.login("student", "student123");
+  assert.equal(login.user.role, "student");
+  assert.ok(login.token);
+  assert.throws(() => authService.login("student", "wrong-password"), /用户名或密码错误/);
+  const request = { headers: { authorization: `Bearer ${login.token}` } };
+  assert.equal(authService.authenticate(request).user.id, "student-demo");
+  assert.throws(() => authService.requireRole(request, ["admin"]), /没有操作权限/);
+  authStore.bindParent("parent-demo", "student-demo");
+  assert.equal(authStore.isParentLinked("parent-demo", "student-demo"), true);
+  authStore.close();
+} finally {
+  await rm(tempAuthDir, { recursive: true, force: true });
+}

@@ -871,3 +871,18 @@ select:focus {
 
 
 
+
+.login-error {
+  padding: 8px 10px;
+  border: 1px solid #e8b4b0;
+  color: #a4322b;
+  background: #fff7f6;
+  font-size: 14px;
+}
+
+.login-hint {
+  margin: 0;
+  color: #64736c;
+  font-size: 13px;
+  line-height: 1.6;
+}

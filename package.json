@@ -6,7 +6,9 @@
   "scripts": {
     "start": "node server/index.js",
     "dev": "node server/index.js",
-    "check": "node --check src/app.js && node --check src/data.js && node --check src/llmGateway.js && node --check src/apiClient.js && node --check src/auditLog.js && node --check src/stateRepository.js && node --check server/index.js && node --check server/deepseekClient.js && node --check server/learningService.js",
+    "check": "node --check src/app.js && node --check src/data.js && node --check src/llmGateway.js && node --check src/apiClient.js && node --check src/auditLog.js && node --check src/stateRepository.js && node --check server/index.js && node --check server/authService.js && node --check server/storage/sqliteAuthStore.js && node --check src/authClient.js && node --check server/deepseekClient.js && node --check server/learningService.js && node --check server/storage/stateStore.js && node --check server/storage/sqliteStateStore.js",
     "smoke": "node smoke-test.mjs"
   }
 }
+
+
