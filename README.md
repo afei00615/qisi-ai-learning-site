@@ -1,79 +1,143 @@
-﻿# 鍚€?AI 瀛︿範鍔╂墜
+﻿# 启思 AI 学习助手
 
-杩欐槸涓€涓腑灏忓鐢?AI 瀛︿範缃戠珯鐨勫彲杩愯 MVP 鍘熷瀷锛岃鐩栵細
+面向中小学生的 AI 学习助手 MVP，围绕浙江地区常见学科提供解题引导、知识问答、作业练习、期中/期末复习、家长报告和内容审核能力。
 
-- 瀛︾敓绔細棣栨瀛︿範妗ｆ銆佸勾绾у鏈熼€夋嫨銆丄I 闂瓟銆佷綔涓氳緟瀵笺€佹湡涓?鏈熸湯澶嶄範
-- 瀹堕暱绔細瀛︿範鎶ュ憡銆佽杽寮辩煡璇嗙偣銆佸璇濇憳瑕併€佸唴瀹逛妇鎶ャ€佹椂闀块檺鍒?- 绠＄悊绔細骞寸骇瀛︾閰嶇疆銆佸唴瀹瑰鏍搁槦鍒椼€佸畨鍏ㄦ棩蹇?- DeepSeek 鏈嶅姟绔帴鍏ワ細鎻愮ず寮忓洖绛斻€佺粌涔犻鐢熸垚銆佺瓟棰樺弽棣堝拰瀹夊叏鎷︽埅
+## 当前能力
 
-## 杩愯鏂瑰紡
+- 学生端：年级与学期档案、按学科独立会话、流式解题引导、知识问答、练习生成和在线复习。
+- 家长端：绑定学生、查看学习报告、设置每日学习时长、提交内容举报。
+- 管理端：查看审核队列、通过、驳回或升级复核内容。
+- AI 服务：由 Node.js 服务端调用 DeepSeek，API Key 不下发到浏览器。
+- 数据存储：SQLite 持久化应用状态、用户、登录会话、家长绑定和审计事件。
+- 权限控制：Bearer Token 会话认证，学生、家长和管理员权限由服务端校验。
 
-### 鏈湴 mock 妯″紡
+## 技术结构
 
-鐩存帴鐢ㄦ祻瑙堝櫒鎵撳紑 `index.html` 鍗冲彲銆傛鏃朵笉浼氳皟鐢ㄦ湇鍔＄锛屼篃涓嶄細浣跨敤 DeepSeek API Key銆?
-### DeepSeek 鏈嶅姟绔ā寮?
-鍏堥厤缃幆澧冨彉閲忥細
+```text
+浏览器
+  ├─ src/authClient.js          登录、会话和权限业务请求
+  ├─ src/apiClient.js           学习与流式问答 API
+  └─ src/stateRepository.js     本地缓存与服务端状态同步
+          │
+          ▼
+Node.js server/index.js
+  ├─ server/authService.js      身份认证与角色校验
+  ├─ server/learningService.js  学习业务与输出校验
+  ├─ server/deepseekClient.js   DeepSeek 客户端
+  └─ server/storage/            SQLite 存储适配层
+```
 
-```bash
-$env:DEEPSEEK_API_KEY="浣犵殑 DeepSeek API Key"
-$env:DEEPSEEK_MODEL="deepseek-v4-flash"
+存储入口统一为 `server/storage/stateStore.js`。业务层只依赖存储接口，后续可以增加 PostgreSQL adapter，保持前端和 HTTP API 基本不变。
+
+## 本地运行
+
+要求 Node.js 22.5 或更高版本，项目使用 Node 内置的 `node:sqlite`。
+
+不配置 DeepSeek Key 时，服务端使用本地 mock，适合界面开发和自动测试：
+
+```powershell
 npm.cmd run dev
 ```
 
-鐒跺悗鎵撳紑锛?
+默认访问地址：
+
 ```text
 http://localhost:3000
 ```
 
-鏈嶅姟绔細鎻愪緵闈欐€侀〉闈㈠拰 `/api/*` 瀛︿範鎺ュ彛锛屾祻瑙堝櫒鍙皟鐢ㄦ湰鍦版湇鍔＄锛孌eepSeek API Key 鍙繚瀛樺湪鏈嶅姟绔幆澧冨彉閲忎腑銆?
-## 宸ョ▼鍖栨敼閫犺繘灞?
-- `src/apiClient.js`锛氬墠绔涔?API 瀹㈡埛绔€侶TTP 妯″紡涓嬭皟鐢?`/api`锛屾枃浠剁洿寮€鏃跺洖閫€鍒版湰鍦?mock銆?- `server/index.js`锛氭棤渚濊禆 Node 鏈嶅姟绔紝鎻愪緵闈欐€佹枃浠跺拰瀛︿範 API 璺敱銆?- `server/deepseekClient.js`锛欴eepSeek OpenAI-compatible Chat Completions 瀹㈡埛绔紝浣跨敤 `response_format: { type: "json_object" }` 鑾峰彇缁撴瀯鍖栬緭鍑恒€?- `server/learningService.js`锛氱粺涓€瀛︿範鏈嶅姟灞傦紝灏佽 DeepSeek 璋冪敤銆佹湰鍦板畨鍏ㄩ妫€銆佺粨鏋勬牎楠屽拰 mock fallback銆?- `src/stateRepository.js`锛氱姸鎬佷粨鍌ㄥ眰锛岀粺涓€灏佽 `localStorage` 璇诲啓鍜岄粯璁ょ姸鎬佽ˉ榻愩€?- `src/auditLog.js`锛氬璁℃棩蹇楀叆鍙ｏ紝缁熶竴璁板綍瀹夊叏鎷︽埅銆佹彁绀哄紡鍥炵瓟鍜屽闀夸妇鎶ャ€?- `smoke-test.mjs`锛氳鐩?API 瀹㈡埛绔€佺姸鎬佷粨鍌ㄣ€佸璁℃棩蹇椼€丏eepSeek 璇锋眰鏍煎紡鍜屽涔犳湇鍔°€?
-## 鏈嶅姟绔?API
+指定端口：
 
-鍓嶇璋冪敤锛?
+```powershell
+$env:PORT="3100"
+npm.cmd run dev
+```
+
+## 接入 DeepSeek
+
+```powershell
+$env:DEEPSEEK_API_KEY="你的 DeepSeek API Key"
+$env:DEEPSEEK_MODEL="deepseek-v4-flash"
+npm.cmd run dev
+```
+
+可选环境变量：
+
+| 变量 | 默认值 | 用途 |
+| --- | --- | --- |
+| `DEEPSEEK_API_KEY` | 空 | DeepSeek 服务端密钥 |
+| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | DeepSeek API 地址 |
+| `DEEPSEEK_MODEL` | `deepseek-v4-flash` | 模型名称 |
+| `QISI_SQLITE_PATH` | `server/data/qisi.sqlite` | SQLite 文件路径 |
+| `PORT` | `3000` | HTTP 服务端口 |
+
+## 体验账号
+
+| 角色 | 用户名 | 密码 |
+| --- | --- | --- |
+| 学生 | `student` | `student123` |
+| 家长 | `parent` | `parent123` |
+| 管理员 | `admin` | `admin123` |
+
+登录会话默认有效 7 天，密码使用 scrypt 加盐哈希保存。生产部署前必须删除或修改体验账号，并使用 HTTPS。
+
+## 服务端 API
+
+认证：
+
+- `POST /api/auth/login`
+- `GET /api/auth/me`
+- `POST /api/auth/logout`
+
+学习功能，要求学生或管理员身份：
+
 - `POST /api/tutor-reply`
+- `POST /api/tutor-reply/stream`
 - `POST /api/practice`
 - `POST /api/answer-feedback`
 - `POST /api/review-quiz`
-- `GET /api/health`
 
-鏈嶅姟绔皟鐢?DeepSeek锛?
-- `POST https://api.deepseek.com/chat/completions`
-- Header锛歚Authorization: Bearer $DEEPSEEK_API_KEY`
-- 榛樿妯″瀷锛歚deepseek-v4-flash`
+状态与家长功能：
 
-## 鍚庣画宸ョ▼鍖栧缓璁?
-- 灏?`src/data.js` 涓殑鐭ヨ瘑鐐广€侀鐩€佸璁℃棩蹇楄縼绉诲埌 PostgreSQL銆?- 澧炲姞鐢ㄦ埛鐧诲綍銆佸闀跨粦瀹氥€佹潈闄愭帶鍒跺拰鍚庡彴瀹℃牳娴併€?- 澧炲姞棰樼洰鎶芥銆佺籂閿欓棴鐜€佹ā鍨嬭緭鍑哄璁″拰鍚堣妯″潡銆?- 涓?DeepSeek 璋冪敤澧炲姞璇锋眰杩借釜 ID銆侀檺娴併€侀噸璇曞拰鎴愭湰缁熻銆?
+- `GET /api/state`：已登录用户读取状态。
+- `POST /api/state`：学生保存学习状态。
+- `POST /api/parent/bind`：家长使用绑定码绑定学生。
+- `POST /api/parent/settings`：已绑定家长设置学习时长。
+- `POST /api/moderation/report`：已绑定家长提交举报。
+- `POST /api/moderation/:id/review`：管理员处理审核项。
+- `GET /api/health`：服务健康检查。
 
-## 鏈嶅姟绔寔涔呭寲
+除登录和健康检查外，请求需携带：
 
-鏈嶅姟绔ā寮忎笅锛屽墠绔細浼樺厛浠?`/api/state` 璇诲彇鐘舵€侊紝骞跺湪鐢ㄦ埛璧勬枡銆佷細璇濄€佸闀跨粦瀹氥€佸鏍搁槦鍒椼€佸畨鍏ㄦ棩蹇楀彉鍖栨椂鍚屾淇濆瓨鍒版湇鍔＄銆?
-褰撳墠榛樿浣跨敤 SQLite锛?
-```bash
-npm.cmd run dev
+```http
+Authorization: Bearer <token>
 ```
 
-榛樿鏁版嵁搴撴枃浠讹細
+## 数据存储
 
-```text
-server/data/qisi.sqlite
+默认数据库文件为 `server/data/qisi.sqlite`，已通过 `.gitignore` 排除，不会提交到仓库。
+
+当前 SQLite 表包括：
+
+- `app_state`：应用学习状态快照。
+- `audit_events`：审计事件。
+- `users`：用户和密码哈希。
+- `auth_sessions`：登录会话。
+- `parent_bindings`：家长与学生绑定关系。
+- `schema_migrations`：数据库迁移版本。
+
+## 检查与测试
+
+```powershell
+npm.cmd run check
+npm.cmd run smoke
 ```
 
-涔熷彲浠ラ€氳繃鐜鍙橀噺鎸囧畾璺緞锛?
-```bash
-$env:QISI_SQLITE_PATH="E:\\data\\qisi.sqlite"
-npm.cmd run dev
-```
+冒烟测试覆盖状态持久化、账号密码校验、会话认证、角色越权、家长绑定、DeepSeek 请求格式和流式回复。
 
-瀛樺偍灞傚叆鍙ｆ槸 `server/storage/stateStore.js`锛屽綋鍓嶅疄鐜版槸 `server/storage/sqliteStateStore.js`銆備笟鍔′唬鐮佸彧渚濊禆 `createStateStore()` 鏆撮湶鐨?`loadState()` / `saveState()`锛屽悗缁縼绉?PostgreSQL 鏃跺彲浠ユ柊澧?PG adapter锛屼繚鎸?API 鍜屽墠绔皟鐢ㄤ笉鍙樸€?
+## 后续改造
 
-## 登录与服务端权限
-
-系统使用 SQLite 保存用户、密码哈希、登录会话和家长绑定关系。登录成功后前端使用 Bearer Token 调用 API；学习数据、DeepSeek 请求、家长操作和后台审核均由服务端校验身份。
-
-体验账号：
-
-- 学生：`student` / `student123`
-- 家长：`parent` / `parent123`
-- 管理员：`admin` / `admin123`
-
-生产部署前应修改或删除体验账号，并接入 HTTPS。当前会话有效期为 7 天，密码使用 scrypt 加盐哈希存储。家长只能绑定学生、调整已绑定学生的时长和提交举报；只有管理员可以处理审核项。
+- 将全局应用状态拆成按用户、会话、消息、练习和报告组织的结构化表。
+- 增加注册、密码重置、会话撤销、登录限流和管理员账号管理。
+- 增加 PostgreSQL 存储适配器及 SQLite 到 PostgreSQL 的迁移工具。
+- 为 DeepSeek 请求增加追踪 ID、重试、限流、成本统计和模型输出审计。
+- 完善内容举报详情、审核操作记录和家长绑定确认流程。
