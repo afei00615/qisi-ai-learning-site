@@ -1,4 +1,4 @@
-﻿import { knowledgeMap, subjects } from "../src/data.js";
+﻿import { knowledgeMap, subjects, tutorStrategies } from "../src/data.js";
 import {
   buildReviewQuiz as buildMockReviewQuiz,
   generatePractice as generateMockPractice,
@@ -39,7 +39,7 @@ export function createLearningService({ deepSeekClient = createDeepSeekClient() 
       const fallback = generateMockTutorReply(payload);
       const subjectName = getSubjectName(payload.subjectId);
       const result = await deepSeekClient.chatJson({
-        systemPrompt: SYSTEM_PROMPT,
+        systemPrompt: `${SYSTEM_PROMPT}\n\n${formatTutorStrategyPrompt(payload.subjectId)}`,
         maxTokens: 1600,
         userPrompt: `请为一次学生提问生成 json 回复。
 
@@ -133,7 +133,7 @@ json 输出格式：
 5. 结尾邀请学生先尝试下一步。`;
 
       text = await deepSeekClient.chatTextStream({
-        systemPrompt: TEXT_STREAM_SYSTEM_PROMPT,
+        systemPrompt: `${TEXT_STREAM_SYSTEM_PROMPT}\n\n${formatTutorStrategyPrompt(payload.subjectId)}`,
         userPrompt,
         maxTokens: 1200,
         onChunk: (chunk) => emit({ type: "chunk", text: chunk })
@@ -158,7 +158,7 @@ json 输出格式：
       const fallback = generateMockPractice({ ...payload, count });
       const subjectName = getSubjectName(payload.subjectId);
       const result = await deepSeekClient.chatJson({
-        systemPrompt: SYSTEM_PROMPT,
+        systemPrompt: `${SYSTEM_PROMPT}\n\n${formatTutorStrategyPrompt(payload.subjectId)}`,
         maxTokens: Math.min(3600, 700 + count * 420),
         userPrompt: `请生成 ${count} 道练习题，并输出 json。
 
@@ -227,6 +227,15 @@ json 输出格式：
       };
     }
   };
+}
+
+function formatTutorStrategyPrompt(subjectId) {
+  const strategy = tutorStrategies[subjectId] || tutorStrategies.math;
+  return [
+    `当前学科专属辅导策略：${strategy.title}`,
+    ...strategy.rules.map((rule, index) => `${index + 1}. ${rule}`),
+    "请根据题型灵活执行，不要套用其他学科的固定解题模板。"
+  ].join("\n");
 }
 
 function sanitizeTutorReply(result, fallback, knowledge) {

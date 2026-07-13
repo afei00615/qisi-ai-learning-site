@@ -1,4 +1,4 @@
-﻿import { grades, knowledgeMap, subjects, terms } from "./data.js";
+﻿import { grades, knowledgeMap, subjects, terms, tutorStrategies } from "./data.js";
 import { createLearningApiClient } from "./apiClient.js";
 import { createAuthClient } from "./authClient.js";
 import { recordAuditLog } from "./auditLog.js";
@@ -15,11 +15,15 @@ ensureChatSessionMaps();
 let activeKnowledge = "linear-equation";
 let activePractice = [];
 let activeQuiz = null;
+let activePracticeSetId = "";
 let practiceLoading = false;
 let reviewLoadingMode = "";
 let systemNotice = "";
 let authReady = false;
 let loginError = "";
+let llmUsage = null;
+let llmUsageLoading = false;
+let llmUsageDays = 30;
 
 const app = document.querySelector("#app");
 
@@ -174,41 +178,42 @@ function renderTopbar() {
           <button type="button" class="secondary compact" id="logout-button">切换</button>
         </div>
         ${currentRole() === "student" ? `<span class="bind-code">绑定码 ${escapeHtml(state.student.bindingCode)}</span>` : ""}
-        <label>
-          年级
-          <select id="grade-select">
-            ${grades.map((grade) => `<option value="${grade}" ${state.student.grade === grade ? "selected" : ""}>${grade} 年级</option>`).join("")}
-          </select>
-        </label>
-        <label>
-          学期
-          <select id="term-select">
-            ${terms.map((term) => `<option value="${term}" ${currentTerm() === term ? "selected" : ""}>${term} 学期</option>`).join("")}
-          </select>
-        </label>
-        <label>
-          学科
-          <select id="subject-select">
-            ${availableSubjects()
-              .map(
-                (subject) =>
-                  `<option value="${subject.id}" ${activeSubject === subject.id ? "selected" : ""}>${subject.name}${subject.phase ? " · " + subject.phase : ""}</option>`
-              )
-              .join("")}
-          </select>
-        </label>
-      </div>
+        ${currentRole() === "student" ? `
+          <label>
+            年级
+            <select id="grade-select">
+              ${grades.map((grade) => `<option value="${grade}" ${state.student.grade === grade ? "selected" : ""}>${grade} 年级</option>`).join("")}
+            </select>
+          </label>
+          <label>
+            学期
+            <select id="term-select">
+              ${terms.map((term) => `<option value="${term}" ${currentTerm() === term ? "selected" : ""}>${term} 学期</option>`).join("")}
+            </select>
+          </label>
+          <label>
+            学科
+            <select id="subject-select">
+              ${availableSubjects().map((subject) => `<option value="${subject.id}" ${activeSubject === subject.id ? "selected" : ""}>${subject.name}${subject.phase ? " · " + subject.phase : ""}</option>`).join("")}
+            </select>
+          </label>
+        ` : currentRole() === "parent" ? `
+          <div class="student-scope" aria-label="绑定学生年级和学期">
+            <span>${state.student.grade} 年级</span>
+            <span>${currentTerm()}学期</span>
+          </div>
+        ` : ""}      </div>
     </header>
   `;
 }
 
 function visibleNavItems() {
   const nav = [
-    { id: "qa", label: "解题助手", desc: "题目讲解", roles: ["student", "admin"] },
-    { id: "knowledge", label: "知识问答", desc: "概念查询", roles: ["student", "admin"] },
-    { id: "homework", label: "作业辅导", desc: "知识点练习", roles: ["student", "admin"] },
-    { id: "review", label: "期中/期末复习", desc: "在线测验", roles: ["student", "admin"] },
-    { id: "parent", label: "家长端", desc: "学习报告", roles: ["parent", "admin"] },
+    { id: "qa", label: "解题助手", desc: "题目讲解", roles: ["student"] },
+    { id: "knowledge", label: "知识问答", desc: "概念查询", roles: ["student"] },
+    { id: "homework", label: "作业辅导", desc: "知识点练习", roles: ["student"] },
+    { id: "review", label: "期中/期末复习", desc: "在线测验", roles: ["student"] },
+    { id: "parent", label: "家长端", desc: "学习报告", roles: ["parent"] },
     { id: "admin", label: "管理端", desc: "内容与安全", roles: ["admin"] }
   ];
   return nav.filter((item) => item.roles.includes(currentRole()));
@@ -248,47 +253,53 @@ function renderQA() {
           </div>
           <span class="pill">${state.student.dailyMinutes}/${state.student.dailyLimit} 分钟</span>
         </div>
-        <div class="chat-window" id="chat-window">
-          ${currentSolveChats().map((msg) => renderChatMessage(msg)).join("")}
-        </div>
-        <div class="composer-box">
-          <form class="composer" id="qa-form">
-            <input id="qa-input" type="text" placeholder="例如：x² - 5x + 6 = 0 怎么做？" autocomplete="off" />
-            <button type="submit">发送</button>
-          </form>
-          <div class="math-toolbar" aria-label="常用数学符号">
-            <button type="button" data-insert="x²" title="插入 x 的平方">x²</button>
-            <button type="button" data-insert="x³" title="插入 x 的立方">x³</button>
-            <button type="button" data-insert="²" title="插入平方上标">²</button>
-            <button type="button" data-insert="³" title="插入立方上标">³</button>
-            <button type="button" data-insert="√()" title="插入开平方模板">√()</button>
-            <button type="button" data-insert="∛()" title="插入开立方模板">∛()</button>
-            <button type="button" data-insert="/" title="插入分数或除法斜杠">a/b</button>
-            <button type="button" data-insert="| |" title="插入绝对值模板">| |</button>
-            <button type="button" data-insert="×" title="插入乘号">×</button>
-            <button type="button" data-insert="÷" title="插入除号">÷</button>
-            <button type="button" data-insert="≤" title="插入小于等于">≤</button>
-            <button type="button" data-insert="≥" title="插入大于等于">≥</button>
+        <div class="conversation-workspace">
+          ${renderConversationSidebar("solve")}
+          <div class="conversation-content">
+            <div class="chat-window" id="chat-window">
+              ${currentSolveChats().map((msg) => renderChatMessage(msg)).join("")}
+            </div>
+            <div class="composer-box">
+              <form class="composer" id="qa-form">
+                <input id="qa-input" type="text" placeholder="例如：${currentTutorStrategy().example}" autocomplete="off" />
+                <button type="submit">发送</button>
+              </form>
+              ${activeSubject === "math" ? `
+              <div class="math-toolbar" aria-label="常用数学符号">
+                <button type="button" data-insert="x²" title="插入 x 的平方">x²</button>
+                <button type="button" data-insert="x³" title="插入 x 的立方">x³</button>
+                <button type="button" data-insert="²" title="插入平方上标">²</button>
+                <button type="button" data-insert="³" title="插入立方上标">³</button>
+                <button type="button" data-insert="√()" title="插入开平方模板">√()</button>
+                <button type="button" data-insert="∛()" title="插入开立方模板">∛()</button>
+                <button type="button" data-insert="/" title="插入分数或除法斜杠">a/b</button>
+                <button type="button" data-insert="| |" title="插入绝对值模板">| |</button>
+                <button type="button" data-insert="×" title="插入乘号">×</button>
+                <button type="button" data-insert="÷" title="插入除号">÷</button>
+                <button type="button" data-insert="≤" title="插入小于等于">≤</button>
+                <button type="button" data-insert="≥" title="插入大于等于">≥</button>
+              </div>
+              <p class="math-input-tip">可直接输入 x^2、x^3、sqrt(16)、cbrt(8)，发送时会转成 x²、x³、√(16)、∛(8)。</p>
+              ` : ""}
+            </div>
           </div>
-          <p class="math-input-tip">可直接输入 x^2、x^3、sqrt(16)、cbrt(8)，发送时会转成 x²、x³、√(16)、∛(8)。</p>
         </div>
       </div>
       <aside class="panel">
-        <h3>解题规则</h3>
+        <h3>${currentTutorStrategy().title}</h3>
         <ul class="check-list">
-          <li>先识别年级、学科和知识点</li>
-          <li>先提示，不直接给最终答案</li>
-          <li>要求学生写出第一步</li>
-          <li>给 1-2 个同类小练习</li>
-          <li>记录疑似求答案和安全事件</li>
+          ${currentTutorStrategy().rules.map((rule) => `<li>${rule}</li>`).join("")}
         </ul>
         <div class="mini-card">
           <strong>推荐提问方式</strong>
-          <p>“我做到了第二步，但不知道移项对不对。”</p>
+          <p>“${currentTutorStrategy().example}”</p>
         </div>
       </aside>
     </section>
   `;
+}
+function currentTutorStrategy(subjectId = activeSubject) {
+  return tutorStrategies[subjectId] || tutorStrategies.math;
 }
 
 function renderKnowledgeQA() {
@@ -302,13 +313,18 @@ function renderKnowledgeQA() {
           </div>
           <span class="pill">${gradeTermLabel()} · ${subjectName(activeSubject)}</span>
         </div>
-        <div class="chat-window" id="knowledge-chat-window">
-          ${currentKnowledgeChats().map((msg) => renderChatMessage(msg)).join("")}
+        <div class="conversation-workspace">
+          ${renderConversationSidebar("knowledge")}
+          <div class="conversation-content">
+            <div class="chat-window" id="knowledge-chat-window">
+              ${currentKnowledgeChats().map((msg) => renderChatMessage(msg)).join("")}
+            </div>
+            <form class="composer" id="knowledge-form">
+              <input id="knowledge-input" type="text" placeholder="例如：${currentTutorStrategy().example}" autocomplete="off" />
+              <button type="submit">发送</button>
+            </form>
+          </div>
         </div>
-        <form class="composer" id="knowledge-form">
-          <input id="knowledge-input" type="text" placeholder="例如：一元二次方程有哪些常用解法？" autocomplete="off" />
-          <button type="submit">发送</button>
-        </form>
       </div>
       <aside class="panel">
         <h3>适合这样问</h3>
@@ -327,6 +343,29 @@ function renderKnowledgeQA() {
   `;
 }
 
+function renderConversationSidebar(kind) {
+  const threads = conversationList(kind);
+  const activeId = state.activeConversationIds[kind][activeSubject];
+  return `
+    <aside class="conversation-sidebar">
+      <button type="button" class="new-conversation-button" data-new-conversation="${kind}">新对话</button>
+      <div class="conversation-history">
+        ${threads.map((thread) => `
+          <button type="button" class="conversation-history-item ${thread.id === activeId ? "active" : ""}" data-conversation-kind="${kind}" data-conversation-id="${thread.id}">
+            <strong>${escapeHtml(thread.title)}</strong>
+            <span>${formatConversationDate(thread.updatedAt)}</span>
+          </button>
+        `).join("")}
+      </div>
+    </aside>
+  `;
+}
+
+function formatConversationDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime()) || date.getTime() === 0) return "历史对话";
+  return new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(date);
+}
 function renderChatMessage(msg) {
   const sender = msg.role === "assistant" ? "AI老师" : state.student.name;
   return `
@@ -394,6 +433,7 @@ function renderHomework() {
             )
             .join("")}
         </div>
+        ${renderPracticeHistory("practice", "练习记录")}
       </div>
       <div class="panel homework-practice-panel">
         <h3>练习区</h3>
@@ -424,32 +464,77 @@ function renderEmptyPractice(selected) {
   `;
 }
 
-function renderPracticeList(questions) {
+function renderPracticeHistory(type, title) {
+  const records = (state.practiceSets || [])
+    .filter((set) => set.subjectId === activeSubject && (type === "practice" ? set.mode === "practice" : ["midterm", "final"].includes(set.mode)))
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
   return `
-    <div class="practice-list">
-      ${questions
-        .map(
-          (q, index) => `
-          <article class="question-card">
-            <div class="question-meta">
-              <span>${escapeHtml(q.difficulty)}</span>
-              <span>${escapeHtml(q.knowledge)}</span>
-            </div>
-            <h4>${index + 1}. ${escapeHtml(q.stem)}</h4>
-            <p class="hint">提示：${escapeHtml(q.hint)}</p>
-            <form class="answer-form" data-question-index="${index}">
-              <input type="text" placeholder="先写你的思路或第一步" />
-              <button type="submit">检查</button>
-            </form>
-            <div class="feedback" id="practice-feedback-${index}"></div>
-          </article>
-        `
-        )
-        .join("")}
-    </div>
+    <section class="learning-history">
+      <div class="learning-history-heading">
+        <h4>${title}</h4>
+        <span>${records.length} 条</span>
+      </div>
+      ${records.length ? `<div class="learning-history-list">
+        ${records.map((record) => {
+          const attempts = (record.questions || []).reduce((count, question) => count + (question.attempts?.length || 0), 0);
+          const active = record.id === activePracticeSetId;
+          return `<button type="button" class="learning-history-item ${active ? "active" : ""}" data-open-practice-set="${record.id}">
+            <strong>${escapeHtml(record.title || practiceModeLabel(record.mode))}</strong>
+            <span>${formatConversationDate(record.createdAt)} · ${record.questions?.length || 0} 题 · ${attempts} 次作答</span>
+          </button>`;
+        }).join("")}
+      </div>` : `<p class="learning-history-empty">还没有${title}。</p>`}
+    </section>
   `;
 }
 
+function practiceModeLabel(mode) {
+  return { practice: "知识点练习", midterm: "期中复习", final: "期末复习" }[mode] || "学习记录";
+}
+
+function openPracticeSet(setId) {
+  const set = (state.practiceSets || []).find((item) => item.id === setId);
+  if (!set) return;
+  activePracticeSetId = set.id;
+  if (set.mode === "practice") {
+    activeQuiz = null;
+    activePractice = set.questions || [];
+    activeView = "homework";
+  } else {
+    activePractice = [];
+    activeQuiz = {
+      title: set.title || practiceModeLabel(set.mode),
+      scope: set.metadata?.scope || `${gradeTermLabel()} · ${subjectName(set.subjectId)}`,
+      questions: set.questions || []
+    };
+    activeView = "review";
+  }
+  render();
+}
+function renderPracticeList(questions) {
+  return `
+    <div class="practice-list">
+      ${questions.map((q, index) => {
+        const latestAttempt = q.attempts?.at(-1);
+        return `
+          <article class="question-card">
+            <div class="question-meta">
+              <span>${escapeHtml(q.difficulty || "基础")}</span>
+              <span>${escapeHtml(q.knowledge || "综合")}</span>
+            </div>
+            <h4>${index + 1}. ${escapeHtml(q.stem)}</h4>
+            <p class="hint">提示：${escapeHtml(q.hint || "先写出你的思路。")}</p>
+            <form class="answer-form" data-question-index="${index}">
+              <input type="text" value="${escapeHtml(latestAttempt?.answer || "")}" placeholder="先写你的思路或第一步" />
+              <button type="submit">检查</button>
+            </form>
+            <div class="feedback ${latestAttempt ? "show" : ""}" id="practice-feedback-${index}">${latestAttempt ? `<strong>${escapeHtml(latestAttempt.score)} 分</strong><span>${escapeHtml(latestAttempt.feedback || "")}</span>` : ""}</div>
+          </article>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
 function renderReview() {
   return `
     <section class="grid review-layout">
@@ -470,6 +555,7 @@ function renderReview() {
             ${state.student.weakPoints.map((point) => `<span class="tag">${point}</span>`).join("")}
           </div>
         </div>
+        ${renderPracticeHistory("review", "测验记录")}
       </div>
       <div class="panel review-quiz-panel">
         ${reviewLoadingMode ? renderLoadingState("正在生成复习测验", reviewLoadingMode === "midterm" ? "正在整理期中范围和薄弱点。" : "正在整理期末综合范围和薄弱点。") : activeQuiz ? renderQuiz(activeQuiz) : `<div class="empty-state"><h4>还没有生成测验</h4><p>选择期中或期末后，系统会生成在线答题卷。</p></div>`}
@@ -549,6 +635,7 @@ function renderAdmin() {
   const subject = subjects.find((item) => item.id === activeSubject);
   return `
     <section class="grid dashboard-grid">
+      ${renderLlmUsagePanel()}
       <div class="panel wide">
         <div class="section-heading">
           <div>
@@ -587,6 +674,64 @@ function renderAdmin() {
   `;
 }
 
+function renderLlmUsagePanel() {
+  const rows = llmUsage?.summary || [];
+  const totals = rows.reduce(
+    (sum, row) => ({
+      requests: sum.requests + Number(row.requests || 0),
+      retries: sum.retries + Number(row.retries || 0),
+      tokens: sum.tokens + Number(row.total_tokens || 0),
+      cost: sum.cost + Number(row.estimated_cost_usd || 0)
+    }),
+    { requests: 0, retries: 0, tokens: 0, cost: 0 }
+  );
+
+  return `
+    <div class="panel wide">
+      <div class="section-heading">
+        <div>
+          <h3>模型用量统计</h3>
+          <p>DeepSeek 请求、重试、Token 和预估成本。</p>
+        </div>
+        <div class="usage-controls">
+          <select id="llm-usage-days" aria-label="统计时间范围">
+            ${[7, 30, 90].map((days) => `<option value="${days}" ${llmUsageDays === days ? "selected" : ""}>近 ${days} 天</option>`).join("")}
+          </select>
+          <button type="button" class="secondary" id="refresh-llm-usage" ${llmUsageLoading ? "disabled" : ""}>${llmUsageLoading ? "加载中" : "刷新"}</button>
+        </div>
+      </div>
+      <div class="metrics">
+        <div class="metric"><span>模型请求</span><strong>${totals.requests}</strong></div>
+        <div class="metric"><span>自动重试</span><strong>${totals.retries}</strong></div>
+        <div class="metric"><span>总 Token</span><strong>${formatNumber(totals.tokens)}</strong></div>
+        <div class="metric"><span>预估成本</span><strong>$${totals.cost.toFixed(6)}</strong></div>
+      </div>
+      ${llmUsageLoading ? renderLoadingState("正在读取用量", "正在汇总模型调用审计记录。") : rows.length ? `
+        <div class="admin-table usage-table">
+          ${rows.map((row) => `<div class="admin-row"><strong>${escapeHtml(row.model)}</strong><span>${row.status === "success" ? "成功" : "失败"} · ${row.requests} 次 · ${formatNumber(row.total_tokens)} Token</span><em>$${Number(row.estimated_cost_usd || 0).toFixed(6)}</em></div>`).join("")}
+        </div>
+      ` : `<div class="empty-state compact"><h4>暂无真实模型用量</h4><p>配置 DeepSeek API Key 并产生调用后，这里会自动显示统计。</p></div>`}
+    </div>
+  `;
+}
+
+async function loadLlmUsage() {
+  if (llmUsageLoading || currentRole() !== "admin") return;
+  llmUsageLoading = true;
+  render();
+  try {
+    llmUsage = await authClient.getLlmUsage(llmUsageDays);
+  } catch (error) {
+    systemNotice = error.message;
+  } finally {
+    llmUsageLoading = false;
+    render();
+  }
+}
+
+function formatNumber(value) {
+  return new Intl.NumberFormat("zh-CN").format(Number(value || 0));
+}
 function renderModerationQueue() {
   const queue = Array.isArray(state.moderationQueue) ? state.moderationQueue : [];
   if (!queue.length) return `<div class="empty-state"><h4>暂无待审核内容</h4><p>举报、抽检和纠错会进入这里。</p></div>`;
@@ -664,6 +809,19 @@ function bindEvents() {
     render();
   });
 
+  document.querySelectorAll("[data-new-conversation]").forEach((button) => {
+    button.addEventListener("click", () => {
+      createConversation(button.dataset.newConversation);
+      render();
+    });
+  });
+
+  document.querySelectorAll("[data-conversation-id]").forEach((button) => {
+    button.addEventListener("click", () => {
+      selectConversation(button.dataset.conversationKind, button.dataset.conversationId);
+      render();
+    });
+  });
   document.querySelectorAll("[data-view]").forEach((button) => {
     button.addEventListener("click", () => {
       activeView = button.dataset.view;
@@ -716,6 +874,7 @@ function bindEvents() {
     };
 
     solveChats.push({ role: "user", text: message });
+    touchCurrentConversation("solve", message);
     solveChats.push(assistantMessage);
     systemNotice = "";
     render();
@@ -789,6 +948,7 @@ function bindEvents() {
     };
 
     knowledgeChats.push({ role: "user", text: message });
+    touchCurrentConversation("knowledge", message);
     knowledgeChats.push(assistantMessage);
     systemNotice = "";
     render();
@@ -860,6 +1020,7 @@ function bindEvents() {
         knowledgeId: activeKnowledge,
         count: 5
       });
+      activePracticeSetId = persistPracticeSet("practice", activePractice, "知识点练习");
       systemNotice = "";
     } catch (error) {
       showSystemError(error);
@@ -867,6 +1028,10 @@ function bindEvents() {
       practiceLoading = false;
       render();
     }
+  });
+
+  document.querySelectorAll("[data-open-practice-set]").forEach((button) => {
+    button.addEventListener("click", () => openPracticeSet(button.dataset.openPracticeSet));
   });
 
   document.querySelectorAll(".answer-form").forEach((form) => {
@@ -879,6 +1044,7 @@ function bindEvents() {
         const feedback = document.querySelector(`#practice-feedback-${index}`);
         feedback.innerHTML = `<strong>${escapeHtml(result.score)} 分</strong><span>${escapeHtml(result.feedback)}</span>`;
         feedback.classList.add("show");
+        persistPracticeAttempt(activePracticeSetId, index, form.querySelector("input").value, result);
         systemNotice = "";
       } catch (error) {
         showSystemError(error);
@@ -893,6 +1059,7 @@ function bindEvents() {
     render();
     try {
       activeQuiz = await learningApi.buildReviewQuiz({ subjectId: activeSubject, grade: state.student.grade, term: currentTerm(), mode: "midterm", weakPoints: state.student.weakPoints });
+      activePracticeSetId = persistPracticeSet("midterm", activeQuiz.questions, activeQuiz.title, { scope: activeQuiz.scope });
       systemNotice = "";
     } catch (error) {
       showSystemError(error);
@@ -909,6 +1076,7 @@ function bindEvents() {
     render();
     try {
       activeQuiz = await learningApi.buildReviewQuiz({ subjectId: activeSubject, grade: state.student.grade, term: currentTerm(), mode: "final", weakPoints: state.student.weakPoints });
+      activePracticeSetId = persistPracticeSet("final", activeQuiz.questions, activeQuiz.title, { scope: activeQuiz.scope });
       systemNotice = "";
     } catch (error) {
       showSystemError(error);
@@ -933,7 +1101,13 @@ function bindEvents() {
     event.preventDefault();
     try {
       const result = await authClient.bindParent(document.querySelector("#bind-code-input").value.trim());
-      state.parent = { ...state.parent, ...result.parent };
+      const remoteState = await stateRepository.loadRemote();
+      if (remoteState) {
+        state = remoteState;
+        ensureChatSessionMaps();
+      } else {
+        state.parent = { ...state.parent, ...result.parent, bindingStatus: "linked" };
+      }
       systemNotice = "绑定成功。";
       render();
     } catch (error) {
@@ -952,6 +1126,13 @@ function bindEvents() {
     }
   });
 
+  document.querySelector("#llm-usage-days")?.addEventListener("change", (event) => {
+    llmUsageDays = Number(event.target.value) || 30;
+    llmUsage = null;
+    loadLlmUsage();
+  });
+
+  document.querySelector("#refresh-llm-usage")?.addEventListener("click", () => loadLlmUsage());
   document.querySelectorAll("[data-review-action]").forEach((button) => {
     button.addEventListener("click", async () => {
       try {
@@ -970,6 +1151,10 @@ function bindEvents() {
 
   const knowledgeChatWindow = document.querySelector("#knowledge-chat-window");
   if (knowledgeChatWindow) knowledgeChatWindow.scrollTop = knowledgeChatWindow.scrollHeight;
+
+  if (activeView === "admin" && currentRole() === "admin" && !llmUsage && !llmUsageLoading) {
+    queueMicrotask(() => loadLlmUsage());
+  }
 }
 
 function isParentLinked() {
@@ -1015,27 +1200,106 @@ function defaultViewForRole(role) {
 }
 
 function currentSolveChats(subjectId = activeSubject) {
-  ensureChatSessionMaps();
-  state.chatSessions[subjectId] ||= defaultSolveChats(subjectId);
-  return state.chatSessions[subjectId];
+  return currentConversation("solve", subjectId).messages;
 }
 
 function currentKnowledgeChats(subjectId = activeSubject) {
+  return currentConversation("knowledge", subjectId).messages;
+}
+
+function currentConversation(kind, subjectId = activeSubject) {
   ensureChatSessionMaps();
-  state.knowledgeSessions[subjectId] ||= defaultKnowledgeChats(subjectId);
-  return state.knowledgeSessions[subjectId];
+  const threads = state.conversationThreads[kind][subjectId];
+  const activeId = state.activeConversationIds[kind][subjectId];
+  return threads.find((thread) => thread.id === activeId) || threads[0];
+}
+
+function conversationList(kind, subjectId = activeSubject) {
+  ensureChatSessionMaps();
+  return state.conversationThreads[kind][subjectId];
 }
 
 function ensureChatSessionMaps() {
   state.chatSessions ||= { math: Array.isArray(state.chats) ? state.chats : defaultSolveChats("math") };
   state.knowledgeSessions ||= { math: Array.isArray(state.knowledgeChats) ? state.knowledgeChats : defaultKnowledgeChats("math") };
-  state.chatSessions[activeSubject] ||= defaultSolveChats(activeSubject);
-  state.knowledgeSessions[activeSubject] ||= defaultKnowledgeChats(activeSubject);
-  state.chats = state.chatSessions[activeSubject];
-  state.knowledgeChats = state.knowledgeSessions[activeSubject];
+  state.conversationThreads ||= { solve: {}, knowledge: {} };
+  state.conversationThreads.solve ||= {};
+  state.conversationThreads.knowledge ||= {};
+  state.activeConversationIds ||= { solve: {}, knowledge: {} };
+  state.activeConversationIds.solve ||= {};
+  state.activeConversationIds.knowledge ||= {};
+
+  ensureSubjectConversation("solve", activeSubject);
+  ensureSubjectConversation("knowledge", activeSubject);
+  syncActiveChatViews();
 }
 
-function defaultSolveChats(subjectId) {
+function ensureSubjectConversation(kind, subjectId) {
+  const legacyMap = kind === "solve" ? state.chatSessions : state.knowledgeSessions;
+  const fallback = kind === "solve" ? defaultSolveChats(subjectId) : defaultKnowledgeChats(subjectId);
+  if (!Array.isArray(state.conversationThreads[kind][subjectId]) || !state.conversationThreads[kind][subjectId].length) {
+    state.conversationThreads[kind][subjectId] = [{
+      id: `legacy-${kind}-${subjectId}`,
+      title: kind === "solve" ? "新解题对话" : "新知识问答",
+      createdAt: new Date(0).toISOString(),
+      updatedAt: new Date(0).toISOString(),
+      messages: Array.isArray(legacyMap[subjectId]) ? legacyMap[subjectId] : fallback
+    }];
+  }
+  const threads = state.conversationThreads[kind][subjectId];
+  const requested = state.activeConversationIds[kind][subjectId];
+  state.activeConversationIds[kind][subjectId] = threads.some((thread) => thread.id === requested) ? requested : threads[0].id;
+}
+
+function createConversation(kind, subjectId = activeSubject) {
+  ensureChatSessionMaps();
+  const now = new Date().toISOString();
+  const thread = {
+    id: `chat-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    title: kind === "solve" ? "新解题对话" : "新知识问答",
+    createdAt: now,
+    updatedAt: now,
+    messages: kind === "solve" ? defaultSolveChats(subjectId) : defaultKnowledgeChats(subjectId)
+  };
+  state.conversationThreads[kind][subjectId].unshift(thread);
+  state.activeConversationIds[kind][subjectId] = thread.id;
+  syncActiveChatViews();
+  saveState();
+  return thread;
+}
+
+function selectConversation(kind, conversationId, subjectId = activeSubject) {
+  ensureChatSessionMaps();
+  if (!state.conversationThreads[kind][subjectId].some((thread) => thread.id === conversationId)) return;
+  state.activeConversationIds[kind][subjectId] = conversationId;
+  syncActiveChatViews();
+  saveState();
+}
+
+function touchCurrentConversation(kind, question) {
+  const thread = currentConversation(kind);
+  const normalized = String(question || "").trim();
+  if (normalized && (/^新(解题对话|知识问答)$/.test(thread.title) || thread.id.startsWith("legacy-"))) {
+    thread.title = normalized.length > 20 ? `${normalized.slice(0, 20)}...` : normalized;
+  }
+  thread.updatedAt = new Date().toISOString();
+  const threads = state.conversationThreads[kind][activeSubject];
+  threads.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+  syncActiveChatViews();
+}
+
+function syncActiveChatViews() {
+  for (const kind of ["solve", "knowledge"]) {
+    const legacyMap = kind === "solve" ? state.chatSessions : state.knowledgeSessions;
+    for (const [subjectId, threads] of Object.entries(state.conversationThreads[kind])) {
+      const activeId = state.activeConversationIds[kind][subjectId];
+      legacyMap[subjectId] = threads.find((thread) => thread.id === activeId)?.messages || threads[0]?.messages || [];
+    }
+  }
+  state.chats = state.chatSessions[activeSubject] || [];
+  state.knowledgeChats = state.knowledgeSessions[activeSubject] || [];
+ }
+ function defaultSolveChats(subjectId) {
   return [
     {
       role: "assistant",
@@ -1077,6 +1341,39 @@ function summarizeContextText(text, maxLength = 420) {
   return normalized.length > maxLength ? `${normalized.slice(0, maxLength)}...` : normalized;
 }
 
+function persistPracticeSet(mode, questions, title, metadata = {}) {
+  const id = `practice-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  state.practiceSets ||= [];
+  state.practiceSets.unshift({
+    id,
+    subjectId: activeSubject,
+    knowledgeId: activeKnowledge,
+    term: currentTerm(),
+    mode,
+    title,
+    createdAt: new Date().toISOString(),
+    metadata,
+    questions: questions.map((question) => ({ ...question, attempts: [] }))
+  });
+  saveState();
+  return id;
+}
+
+function persistPracticeAttempt(setId, questionIndex, answer, result) {
+  if (!setId) return;
+  const set = (state.practiceSets || []).find((item) => item.id === setId);
+  const question = set?.questions?.[questionIndex];
+  if (!question) return;
+  question.attempts ||= [];
+  question.attempts.push({
+    id: `attempt-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    answer,
+    score: result.score,
+    feedback: result.feedback,
+    createdAt: new Date().toISOString()
+  });
+  saveState();
+}
 function insertAtCursor(input, text) {
   if (!input) return;
   const start = input.selectionStart ?? input.value.length;
@@ -1185,4 +1482,3 @@ async function restoreSession() {
   activeView = defaultViewForRole(session.user.role);
   await loadRemoteState();
 }
-

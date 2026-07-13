@@ -89,8 +89,9 @@ function withChatSessions(state, saved = state) {
 
   state.chatSessions = normalizeSessionMap(saved.chatSessions, saved.chats, defaultSolve);
   state.knowledgeSessions = normalizeSessionMap(saved.knowledgeSessions, saved.knowledgeChats, defaultKnowledge);
-  state.chats = state.chatSessions.math;
-  state.knowledgeChats = state.knowledgeSessions.math;
+  state.conversationThreads = normalizeConversationThreads(saved.conversationThreads, state.chatSessions, state.knowledgeSessions);
+  state.activeConversationIds = normalizeActiveConversationIds(saved.activeConversationIds, state.conversationThreads);
+  syncLegacyChatViews(state);
   return state;
 }
 
@@ -102,6 +103,68 @@ function normalizeSessionMap(sessionMap, legacyChats, fallbackChats) {
   return normalized;
 }
 
+function normalizeConversationThreads(savedThreads, solveSessions, knowledgeSessions) {
+  const normalized = { solve: {}, knowledge: {} };
+  for (const kind of ["solve", "knowledge"]) {
+    const source = savedThreads?.[kind];
+    if (source && typeof source === "object" && !Array.isArray(source)) {
+      for (const [subjectId, threads] of Object.entries(source)) {
+        if (Array.isArray(threads) && threads.length) normalized[kind][subjectId] = threads.map((thread, index) => normalizeThread(thread, kind, subjectId, index));
+      }
+    }
+  }
+  migrateLegacySessions(normalized.solve, solveSessions, "solve");
+  migrateLegacySessions(normalized.knowledge, knowledgeSessions, "knowledge");
+  return normalized;
+}
+
+function migrateLegacySessions(target, sessions, kind) {
+  for (const [subjectId, messages] of Object.entries(sessions || {})) {
+    if (target[subjectId]?.length || !Array.isArray(messages)) continue;
+    target[subjectId] = [normalizeThread({ id: `legacy-${kind}-${subjectId}`, messages }, kind, subjectId, 0)];
+  }
+}
+
+function normalizeThread(thread, kind, subjectId, index) {
+  const messages = Array.isArray(thread?.messages) ? clone(thread.messages) : [];
+  const createdAt = thread?.createdAt || new Date(0).toISOString();
+  return {
+    id: thread?.id || `${kind}-${subjectId}-${index}`,
+    title: thread?.title || conversationTitle(messages, kind),
+    createdAt,
+    updatedAt: thread?.updatedAt || createdAt,
+    messages
+  };
+}
+
+function normalizeActiveConversationIds(savedIds, threads) {
+  const result = { solve: {}, knowledge: {} };
+  for (const kind of ["solve", "knowledge"]) {
+    for (const [subjectId, items] of Object.entries(threads[kind])) {
+      const requested = savedIds?.[kind]?.[subjectId];
+      result[kind][subjectId] = items.some((item) => item.id === requested) ? requested : items[0]?.id || "";
+    }
+  }
+  return result;
+}
+
+function syncLegacyChatViews(state) {
+  for (const kind of ["solve", "knowledge"]) {
+    const legacyMap = kind === "solve" ? state.chatSessions : state.knowledgeSessions;
+    for (const [subjectId, threads] of Object.entries(state.conversationThreads[kind])) {
+      const activeId = state.activeConversationIds[kind][subjectId];
+      legacyMap[subjectId] = threads.find((thread) => thread.id === activeId)?.messages || threads[0]?.messages || [];
+    }
+  }
+  state.chats = state.chatSessions.math || [];
+  state.knowledgeChats = state.knowledgeSessions.math || [];
+}
+
+function conversationTitle(messages, kind) {
+  const firstQuestion = messages.find((message) => message.role === "user")?.text?.trim();
+  if (firstQuestion) return firstQuestion.length > 20 ? `${firstQuestion.slice(0, 20)}...` : firstQuestion;
+  return kind === "solve" ? "新解题对话" : "新知识问答";
+}
 function getBrowserStorage() {
   return typeof globalThis.localStorage === "undefined" ? null : globalThis.localStorage;
 }
@@ -130,4 +193,3 @@ function clone(value) {
   if (typeof structuredClone === "function") return structuredClone(value);
   return JSON.parse(JSON.stringify(value));
 }
-

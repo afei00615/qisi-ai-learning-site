@@ -50,6 +50,10 @@ export function createAuthClient({
 
     reviewModeration(id, action) {
       return request(`/moderation/${encodeURIComponent(id)}/review`, { method: "POST", body: { action } });
+    },
+
+    getLlmUsage(days = 30) {
+      return request(`/admin/llm-usage?days=${encodeURIComponent(days)}`, { method: "GET" });
     }
   };
 

@@ -1,4 +1,4 @@
-﻿import { knowledgeMap, sampleQuestions, safetyKeywords } from "./data.js";
+﻿import { knowledgeMap, sampleQuestions, safetyKeywords, tutorStrategies } from "./data.js";
 
 export function inspectSafety(input) {
   const normalized = input.trim().toLowerCase();
@@ -41,6 +41,7 @@ export function generateTutorReply({ message, subjectId, grade }) {
   }
 
   const knowledge = inferKnowledge(message, subjectId, grade);
+  const strategy = tutorStrategies[subjectId] || tutorStrategies.math;
   const isHomeworkLike = /求|解|证明|答案|作业|题|等于|方程|翻译|作文|阅读|怎么做|怎么算|不会做|帮我看/.test(message);
   const intro = safety.guidance ? `${safety.guidance}\n\n` : "";
 
@@ -51,9 +52,9 @@ export function generateTutorReply({ message, subjectId, grade }) {
       intro +
       [
         `你现在练的是「${knowledge.title}」。`,
-        `第一步：先找题目里的关键信息，圈出条件、要求和容易出错的位置。`,
-        `第二步：试着说出你准备用的知识点，比如「${knowledge.goals[0]}」。`,
-        `第三步：把你的第一步写给我，我会帮你检查哪里可以改进。`
+        `先聚焦：${strategy.rules[0]}。`,
+        `找依据时注意：${strategy.rules[1]}。`,
+        `先把你的尝试发给我，我会按“${strategy.rules[2]}”继续帮你。`
       ].join("\n"),
     knowledge,
     microPractice: buildMicroPractice(subjectId, grade, knowledge)

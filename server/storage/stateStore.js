@@ -1,5 +1,5 @@
-import { createSqliteStateStore } from "./sqliteStateStore.js";
+import { createSqliteStructuredStateStore } from "./sqliteStructuredStateStore.js";
 
 export function createStateStore(options = {}) {
-  return createSqliteStateStore(options);
+  return createSqliteStructuredStateStore(options);
 }

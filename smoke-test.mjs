@@ -5,10 +5,14 @@ import { join } from "node:path";
 import { createLearningApiClient } from "./src/apiClient.js";
 import { recordAuditLog } from "./src/auditLog.js";
 import { buildReviewQuiz, generatePractice, generateTutorReply } from "./src/llmGateway.js";
+import { tutorStrategies } from "./src/data.js";
 import { createStateRepository } from "./src/stateRepository.js";
-import { createDeepSeekClient } from "./server/deepseekClient.js";
+import { createDeepSeekClient, estimateCostUsd } from "./server/deepseekClient.js";
+import { createRateLimiter } from "./server/rateLimiter.js";
+import { withRequestContext } from "./server/observability/requestContext.js";
+import { createLlmAuditStore } from "./server/storage/llmAuditStore.js";
 import { createLearningService } from "./server/learningService.js";
-import { createSqliteStateStore } from "./server/storage/sqliteStateStore.js";
+import { createSqliteStructuredStateStore as createSqliteStateStore } from "./server/storage/sqliteStructuredStateStore.js";
 import { createSqliteAuthStore } from "./server/storage/sqliteAuthStore.js";
 import { createAuthService } from "./server/authService.js";
 
@@ -21,6 +25,24 @@ assert.equal(tutorReply.kind, "scaffold");
 assert.match(tutorReply.title, /不急着看最终答案/);
 assert.equal(tutorReply.text.includes("x = 11"), false);
 assert.equal(tutorReply.microPractice.length, 2);
+assert.equal(Object.keys(tutorStrategies).length, 6);
+assert.match(tutorStrategies.chinese.rules.join(""), /原文/);
+assert.match(tutorStrategies.english.rules.join(""), /上下文/);
+
+const chineseTutorReply = generateTutorReply({
+  message: "这篇阅读的主要内容怎么概括？",
+  subjectId: "chinese",
+  grade: 5
+});
+assert.match(chineseTutorReply.text, /回到原文定位依据/);
+assert.doesNotMatch(chineseTutorReply.text, /移项/);
+
+const englishTutorReply = generateTutorReply({
+  message: "这道英语语法题怎么判断？",
+  subjectId: "english",
+  grade: 6
+});
+assert.match(englishTutorReply.text, /上下文和时间标志/);
 
 const practice = generatePractice({ subjectId: "math", grade: 7, knowledgeId: "linear-equation", count: 5 });
 assert.equal(practice.length, 5);
@@ -118,17 +140,45 @@ try {
   const sqliteStore = createSqliteStateStore({ dbPath });
   const sqliteState = sqliteStore.loadState();
   sqliteState.student.grade = 9;
+  sqliteState.conversationThreads.solve.math[0].messages.push({ role: "user", text: "默认学生消息" });
+  sqliteState.conversationThreads.solve.math.unshift({ id: "second-math-conversation", title: "第二条数学会话", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), messages: [{ role: "user", text: "新的数学问题" }] });
+  sqliteState.activeConversationIds.solve.math = "second-math-conversation";
+  sqliteState.practiceSets = [{
+    id: "practice-test",
+    subjectId: "math",
+    knowledgeId: "linear-equation",
+    term: "上",
+    mode: "practice",
+    title: "结构化练习",
+    createdAt: new Date().toISOString(),
+    questions: [{ id: "practice-item", stem: "x + 1 = 2", answer: "x = 1", attempts: [{ id: "attempt-test", answer: "x = 1", score: 100, feedback: "正确", createdAt: new Date().toISOString() }] }]
+  }];
   recordAuditLog(sqliteState, { type: "SQLite测试", detail: "状态已写入 SQLite", actor: "system" });
-  sqliteStore.saveState(sqliteState);
+  sqliteStore.saveState(sqliteState, "student-demo");
+
+  const secondStudent = sqliteStore.loadState("student-second");
+  secondStudent.student.grade = 5;
+  secondStudent.conversationThreads.solve.math[0].messages = [{ role: "user", text: "第二个学生消息" }];
+  sqliteStore.saveState(secondStudent, "student-second");
   sqliteStore.close();
 
   const reopenedStore = createSqliteStateStore({ dbPath });
-  const reopenedState = reopenedStore.loadState();
+  const reopenedState = reopenedStore.loadState("student-demo");
+  const reopenedSecond = reopenedStore.loadState("student-second");
   assert.equal(reopenedState.student.grade, 9);
+  assert.equal(reopenedState.conversationThreads.solve.math.length, 2);
+  assert.match(reopenedState.conversationThreads.solve.math[0].title, /第二条数学会话/);
+  assert.equal(reopenedState.activeConversationIds.solve.math, reopenedState.conversationThreads.solve.math[0].id);
+  assert.equal(reopenedSecond.student.grade, 5);
+  assert.ok(reopenedState.conversationThreads.solve.math.some((thread) => thread.messages.some((message) => /默认学生/.test(message.text))));
+  assert.match(reopenedSecond.chatSessions.math[0].text, /第二个学生/);
+  assert.equal(reopenedState.practiceSets[0].questions[0].attempts[0].score, 100);
   assert.ok(reopenedState.safetyLogs.some((log) => log.type === "SQLite测试"));
   reopenedStore.close();
 } finally {
-  await rm(tempStateDir, { recursive: true, force: true });
+  await rm(tempStateDir, { recursive: true, force: true }).catch((error) => {
+    if (error.code !== "EBUSY") throw error;
+  });
 }
 
 let deepSeekRequest;
@@ -171,6 +221,48 @@ const fullStreamText = await deepSeekStreamClient.chatTextStream({
 assert.equal(fullStreamText, "先看左边，再移项。");
 assert.equal(streamedText, "先看左边，再移项。");
 assert.equal(deepSeekStreamRequest.body.stream, true);
+assert.equal(deepSeekStreamRequest.body.stream_options.include_usage, true);
+
+const limiter = createRateLimiter({ limit: 2, windowMs: 60_000 });
+assert.equal(limiter.consume("student-demo").allowed, true);
+assert.equal(limiter.consume("student-demo").allowed, true);
+assert.equal(limiter.consume("student-demo").allowed, false);
+assert.ok(estimateCostUsd("deepseek-v4-flash", { prompt_cache_hit_tokens: 10, prompt_cache_miss_tokens: 20, completion_tokens: 5 }) > 0);
+
+const tempLlmAuditDir = await mkdtemp(join(tmpdir(), "qisi-llm-audit-"));
+try {
+  const auditStore = createLlmAuditStore({ dbPath: join(tempLlmAuditDir, "audit.sqlite") });
+  let retryAttempts = 0;
+  const retryClient = createDeepSeekClient({
+    apiKey: "test-key",
+    maxRetries: 2,
+    retryBaseMs: 0,
+    auditStore,
+    fetchImpl: async () => {
+      retryAttempts += 1;
+      if (retryAttempts === 1) return new Response("busy", { status: 503 });
+      return new Response(JSON.stringify({
+        id: "deepseek-request-test",
+        choices: [{ message: { content: JSON.stringify({ ok: true }) } }],
+        usage: { prompt_tokens: 30, prompt_cache_hit_tokens: 10, prompt_cache_miss_tokens: 20, completion_tokens: 5, total_tokens: 35 }
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+  });
+  const retryResult = await withRequestContext(
+    { traceId: "trace-retry-test", userId: "student-demo", operation: "/api/practice", startedAt: Date.now() },
+    () => retryClient.chatJson({ systemPrompt: "json", userPrompt: "retry" })
+  );
+  assert.equal(retryResult.ok, true);
+  assert.equal(retryAttempts, 2);
+  const usageSummary = auditStore.usageSummary({ days: 1 });
+  assert.equal(usageSummary[0].requests, 1);
+  assert.equal(usageSummary[0].retries, 1);
+  assert.equal(usageSummary[0].total_tokens, 35);
+  assert.ok(usageSummary[0].estimated_cost_usd > 0);
+  auditStore.close();
+} finally {
+  await rm(tempLlmAuditDir, { recursive: true, force: true });
+}
 const service = createLearningService({ deepSeekClient });
 const feedback = await service.gradeAnswer({ question: practice[0], answer: "先展开括号再移项" });
 assert.equal(feedback.score, 88);
@@ -197,6 +289,21 @@ assert.ok(streamEvents.some((event) => event.type === "chunk"));
 assert.ok(streamEvents.some((event) => event.type === "done"));
 assert.match(deepSeekStreamRequest.body.messages[1].content, /x²\+5x\+6=0/);
 assert.match(deepSeekStreamRequest.body.messages[1].content, /最近对话上下文/);
+assert.match(deepSeekStreamRequest.body.messages[0].content, /数学解题规则/);
+
+await streamService.streamTutorReply(
+  {
+    message: "这段文字的主要内容怎么概括？",
+    subjectId: "chinese",
+    grade: 5,
+    term: "上",
+    conversationContext: []
+  },
+  () => {}
+);
+assert.match(deepSeekStreamRequest.body.messages[0].content, /语文辅导规则/);
+assert.match(deepSeekStreamRequest.body.messages[0].content, /回到原文定位依据/);
+
 const knowledgeEvents = [];
 const knowledgeReply = await streamService.streamTutorReply(
   {

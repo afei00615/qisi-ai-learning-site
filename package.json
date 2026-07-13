@@ -6,9 +6,7 @@
   "scripts": {
     "start": "node server/index.js",
     "dev": "node server/index.js",
-    "check": "node --check src/app.js && node --check src/data.js && node --check src/llmGateway.js && node --check src/apiClient.js && node --check src/auditLog.js && node --check src/stateRepository.js && node --check server/index.js && node --check server/authService.js && node --check server/storage/sqliteAuthStore.js && node --check src/authClient.js && node --check server/deepseekClient.js && node --check server/learningService.js && node --check server/storage/stateStore.js && node --check server/storage/sqliteStateStore.js",
+    "check": "node --check src/app.js && node --check src/data.js && node --check src/llmGateway.js && node --check src/apiClient.js && node --check src/auditLog.js && node --check src/stateRepository.js && node --check server/index.js && node --check server/authService.js && node --check server/rateLimiter.js && node --check server/observability/requestContext.js && node --check server/storage/llmAuditStore.js && node --check server/storage/sqliteAuthStore.js && node --check src/authClient.js && node --check server/deepseekClient.js && node --check server/learningService.js && node --check server/storage/stateStore.js && node --check server/storage/sqliteStateStore.js && node --check server/storage/sqliteStructuredStateStore.js",
     "smoke": "node smoke-test.mjs"
   }
 }
-
-
